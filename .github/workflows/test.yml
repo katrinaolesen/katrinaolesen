@@ -1,0 +1,79 @@
+name: CI Pipeline
+
+on:
+  - push
+  - pull_request
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["stable", "oldstable"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go }} with dependency cache
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Install Go dependencies
+        if: hashFiles('go.mod') != ''
+        run: go mod download
+        shell: bash
+
+      - name: Check Go formatting and lint
+        if: hashFiles('go.mod') != ''
+        run: |
+          if ! command -v golangci-lint >/dev/null 2>&1; then
+            echo "::notice::golangci-lint is not installed; skipping lint"
+            exit 0
+          fi
+          golangci-lint run ./...
+          test -z "$(gofmt -l $(find . -name '*.go' -not -path './.git/*' -not -path './vendor/*'))"
+        shell: bash
+
+      - name: Build Go packages
+        if: hashFiles('go.mod') != ''
+        run: go build ./...
+        shell: bash
+
+      - name: Run Go unit and integration tests
+        if: hashFiles('go.mod') != ''
+        run: go test ./...
+        shell: bash
+
+      - name: Write pipeline summary
+        if: always()
+        env:
+          GO_STABLE_OUTCOME: ${{ steps.setup-go.outputs.outcome }}
+          GO_OLDSTABLE_OUTCOME: ${{ steps.setup-go.outputs.outcome }}
+          DEPS_OUTCOME: ${{ steps.go-deps.outputs.outcome }}
+          LINT_OUTCOME: ${{ steps.go-lint.outputs.outcome }}
+          BUILD_OUTCOME: ${{ steps.go-build.outputs.outcome }}
+          TEST_OUTCOME: ${{ steps.go-test.outputs.outcome }}
+        run: |
+          {
+            echo '### Go runtime matrix'
+            echo ''
+            echo '| Runtime | Outcome |'
+            echo '| --- | --- |'
+            echo "| stable | $GO_STABLE_OUTCOME |"
+            echo "| oldstable | $GO_OLDSTABLE_OUTCOME |"
+            echo "| Dependencies | $DEPS_OUTCOME |"
+            echo "| Format and lint | $LINT_OUTCOME |"
+            echo "| Build | $BUILD_OUTCOME |"
+            echo "| Unit and integration tests | $TEST_OUTCOME |"
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
